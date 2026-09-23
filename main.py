@@ -32,24 +32,39 @@ from datetime import datetime
 
 # Register Unicode TrueType Fonts for Multilingual PDF Reports (Kannada, Hindi, English)
 BASE_DIR = Path(__file__).resolve().parent
-FONTS_DIR = BASE_DIR.parent / "fonts"
-if not FONTS_DIR.exists():
-    FONTS_DIR = BASE_DIR / "fonts"
 
-dev_reg = str(FONTS_DIR / "NotoSansDevanagari-Regular.ttf")
-dev_bold = str(FONTS_DIR / "NotoSansDevanagari-Bold.ttf")
-kn_reg = str(FONTS_DIR / "NotoSansKannada-Regular.ttf")
-kn_bold = str(FONTS_DIR / "NotoSansKannada-Bold.ttf")
+possible_font_dirs = [
+    BASE_DIR / "fonts",
+    BASE_DIR.parent / "fonts",
+    Path.cwd() / "fonts",
+    Path.cwd() / "ai backend" / "fonts",
+]
 
-if os.path.exists(dev_reg) and os.path.exists(dev_bold):
-    pdfmetrics.registerFont(TTFont("Devanagari", dev_reg))
-    pdfmetrics.registerFont(TTFont("Devanagari-Bold", dev_bold))
-    pdfmetrics.registerFontFamily("Devanagari", normal="Devanagari", bold="Devanagari-Bold", italic="Devanagari", boldItalic="Devanagari-Bold")
+dev_reg, dev_bold, kn_reg, kn_bold = None, None, None, None
+for f_dir in possible_font_dirs:
+    if f_dir.exists():
+        if not dev_reg and (f_dir / "NotoSansDevanagari-Regular.ttf").exists():
+            dev_reg = str(f_dir / "NotoSansDevanagari-Regular.ttf")
+            dev_bold = str(f_dir / "NotoSansDevanagari-Bold.ttf")
+        if not kn_reg and (f_dir / "NotoSansKannada-Regular.ttf").exists():
+            kn_reg = str(f_dir / "NotoSansKannada-Regular.ttf")
+            kn_bold = str(f_dir / "NotoSansKannada-Bold.ttf")
 
-if os.path.exists(kn_reg) and os.path.exists(kn_bold):
-    pdfmetrics.registerFont(TTFont("Kannada", kn_reg))
-    pdfmetrics.registerFont(TTFont("Kannada-Bold", kn_bold))
-    pdfmetrics.registerFontFamily("Kannada", normal="Kannada", bold="Kannada-Bold", italic="Kannada", boldItalic="Kannada-Bold")
+if dev_reg and dev_bold and os.path.exists(dev_reg) and os.path.exists(dev_bold):
+    try:
+        pdfmetrics.registerFont(TTFont("Devanagari", dev_reg))
+        pdfmetrics.registerFont(TTFont("Devanagari-Bold", dev_bold))
+        pdfmetrics.registerFontFamily("Devanagari", normal="Devanagari", bold="Devanagari-Bold", italic="Devanagari", boldItalic="Devanagari-Bold")
+    except Exception as e:
+        print(f"[Fonts Warning] Devanagari font registration failed: {e}")
+
+if kn_reg and kn_bold and os.path.exists(kn_reg) and os.path.exists(kn_bold):
+    try:
+        pdfmetrics.registerFont(TTFont("Kannada", kn_reg))
+        pdfmetrics.registerFont(TTFont("Kannada-Bold", kn_bold))
+        pdfmetrics.registerFontFamily("Kannada", normal="Kannada", bold="Kannada-Bold", italic="Kannada", boldItalic="Kannada-Bold")
+    except Exception as e:
+        print(f"[Fonts Warning] Kannada font registration failed: {e}")
 
 
 # =========================
@@ -64,7 +79,12 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "https://onionai.onrender.com",
+        "https://vistara-ai-backend.onrender.com",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -149,7 +169,6 @@ async def tts_get(text: str = "", lang: str = "en"):
         media_type="audio/mpeg",
         headers={
             "Cache-Control": "public, max-age=86400",
-            "Access-Control-Allow-Origin": "*",
             "Accept-Ranges": "bytes"
         }
     )
@@ -169,7 +188,6 @@ async def tts_post(payload: dict):
         media_type="audio/mpeg",
         headers={
             "Cache-Control": "public, max-age=86400",
-            "Access-Control-Allow-Origin": "*",
             "Accept-Ranges": "bytes"
         }
     )
@@ -213,6 +231,7 @@ REPORT_DIR.mkdir(exist_ok=True)
 # =========================
 
 @app.get("/")
+@app.get("/health")
 @app.get("/api/health")
 def root():
     return {
@@ -529,9 +548,9 @@ def normalize_language(lang_val: str) -> str:
     if not lang_val:
         return "English"
     lv = str(lang_val).strip().lower()
-    if "kannada" in lv or lv == "kn":
+    if "kannada" in lv or lv in ["kn", "kan"]:
         return "Kannada"
-    if "hindi" in lv or lv == "hi":
+    if "hindi" in lv or lv in ["hi", "hin"]:
         return "Hindi"
     return "English"
 
@@ -580,8 +599,8 @@ async def generate_report(
     grade_a_pct: str = Form(""),
     urs_pct: str = Form(""),
     grading_status: str = Form("Assessment Pending"),
-    language: str = Form("English"),
-    lang: str = Form("English"),
+    language: str = Form(None),
+    lang: str = Form(None),
     farmer_name: str = Form("Registered Producer"),
     farmer_id: str = Form("MH-REG-1049"),
     center: str = Form("Lasalgaon APMC Mandi"),
@@ -591,7 +610,25 @@ async def generate_report(
     total_payout: str = Form("")
 ):
     try:
-        active_lang = normalize_language(language or lang)
+        # Determine active language (supports 'kn', 'hi', 'en', 'Kannada', 'Hindi', 'English')
+        resolved_lang = None
+        for candidate in [lang, language]:
+            if candidate and str(candidate).strip():
+                c_str = str(candidate).strip().lower()
+                if "kannada" in c_str or c_str in ["kn", "kan"]:
+                    resolved_lang = "Kannada"
+                    break
+                elif "hindi" in c_str or c_str in ["hi", "hin"]:
+                    resolved_lang = "Hindi"
+                    break
+                elif "english" in c_str or c_str in ["en", "eng"]:
+                    resolved_lang = "English"
+                    break
+
+        if not resolved_lang:
+            resolved_lang = normalize_language(lang or language or "English")
+
+        active_lang = resolved_lang if resolved_lang in TRANSLATIONS else "English"
         t_dict = TRANSLATIONS[active_lang]
 
         # Font selection for Multilingual rendering
